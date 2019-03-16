@@ -196,6 +196,32 @@ class VideoExtractor():
                     self.p_i(stream_id)
 
         else:
+            if 'only_caption' in kwargs and kwargs['only_caption']:
+                print('Only dump captions')
+
+                for lang in self.caption_tracks:
+                    filename = '%s.%s.srt' % (get_filename(self.title), lang)
+                    print('Saving %s ... ' % filename, end="", flush=True)
+                    srt = self.caption_tracks[lang]
+                    with open(os.path.join(kwargs['output_dir'], filename),
+                              'w', encoding='utf-8') as x:
+                        x.write(srt)
+                    print('Done.')
+
+                if self.danmaku is not None and not dry_run:
+                    filename = '{}.cmt.xml'.format(get_filename(self.title))
+                    print('Downloading {} ...\n'.format(filename))
+                    with open(os.path.join(kwargs['output_dir'], filename), 'w', encoding='utf8') as fp:
+                        fp.write(self.danmaku)
+
+                if self.lyrics is not None and not dry_run:
+                    filename = '{}.lrc'.format(get_filename(self.title))
+                    print('Downloading {} ...\n'.format(filename))
+                    with open(os.path.join(kwargs['output_dir'], filename), 'w', encoding='utf8') as fp:
+                        fp.write(self.lyrics)
+
+                return
+
             if 'stream_id' in kwargs and kwargs['stream_id']:
                 # Download the stream
                 stream_id = kwargs['stream_id']

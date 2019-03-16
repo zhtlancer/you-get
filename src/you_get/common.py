@@ -1443,6 +1443,10 @@ def script_main(download, download_playlist, **kwargs):
         help='Do not download captions (subtitles, lyrics, danmaku, ...)'
     )
     download_grp.add_argument(
+        '--only-caption', action='store_true',
+        help='Only download captions (subtitles, lyrics, danmaku, ...)'
+    )
+    download_grp.add_argument(
         '-f', '--force', action='store_true', default=False,
         help='Force overwriting existing files'
     )
@@ -1561,6 +1565,10 @@ def script_main(download, download_playlist, **kwargs):
         player = args.player
         caption = False
 
+    only_caption = False
+    if args.only_caption:
+        only_caption = True
+
     if args.no_proxy:
         set_http_proxy('')
     else:
@@ -1598,6 +1606,7 @@ def script_main(download, download_playlist, **kwargs):
             URLs, args.playlist,
             output_dir=args.output_dir, merge=not args.no_merge,
             info_only=info_only, json_output=json_output, caption=caption,
+            only_caption=only_caption,
             password=args.password,
             **extra
         )
