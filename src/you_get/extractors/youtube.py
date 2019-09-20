@@ -109,7 +109,7 @@ class YouTube(VideoExtractor):
             else:
                 f2def = re.search(r'[^$\w]%s:function\((\w+)\)(\{[^\{\}]+\})' % f2e, js)
                 f2def = 'function {}({},b){}'.format(f2e, f2def.group(1), f2def.group(2))
-            f2 = re.sub(r'(\W)(as|if|in|is|or)\(', r'\1_\2(', f2)
+            f2 = re.sub(r'(as|if|in|is|or)', r'_\1', f2)
             f2 = re.sub(r'\$', '_dollar', f2)
             code = code + 'global %s\n' % f2 + tr_js(f2def)
 
@@ -195,7 +195,14 @@ class YouTube(VideoExtractor):
                 self.download_playlist_by_url(self.url, **kwargs)
                 exit(0)
 
-        video_info = parse.parse_qs(get_content('https://www.youtube.com/get_video_info?video_id={}'.format(self.vid)))
+        if re.search('\Wlist=', self.url) and not kwargs.get('playlist'):
+            log.w('This video is from a playlist. (use --playlist to download all videos in the playlist.)')
+
+        # Get video info
+        # 'eurl' is a magic parameter that can bypass age restriction
+        # full form: 'eurl=https%3A%2F%2Fyoutube.googleapis.com%2Fv%2F{VIDEO_ID}'
+        video_info = parse.parse_qs(get_content('https://www.youtube.com/get_video_info?video_id={}&eurl=https%3A%2F%2Fy'.format(self.vid)))
+        logging.debug('STATUS: %s' % video_info['status'][0])
 
         ytplayer_config = None
         if 'status' not in video_info:
@@ -203,8 +210,7 @@ class YouTube(VideoExtractor):
             raise
         elif video_info['status'] == ['ok']:
             if 'use_cipher_signature' not in video_info or video_info['use_cipher_signature'] == ['False']:
-                self.title = parse.unquote_plus(video_info['title'][0])
-
+                self.title = parse.unquote_plus(json.loads(video_info["player_response"][0])["videoDetails"]["title"])
                 # Parse video page (for DASH)
                 video_page = get_content('https://www.youtube.com/watch?v=%s' % self.vid)
                 try:
@@ -212,21 +218,27 @@ class YouTube(VideoExtractor):
                     self.html5player = 'https://www.youtube.com' + ytplayer_config['assets']['js']
                     # Workaround: get_video_info returns bad s. Why?
                     stream_list = ytplayer_config['args']['url_encoded_fmt_stream_map'].split(',')
+                    #stream_list = ytplayer_config['args']['adaptive_fmts'].split(',')
                 except:
                     stream_list = video_info['url_encoded_fmt_stream_map'][0].split(',')
-                    self.html5player = None
+                    if re.search('([^"]*/base\.js)"', video_page):
+                        self.html5player = 'https://www.youtube.com' + re.search('([^"]*/base\.js)"', video_page).group(1)
+                    else:
+                        self.html5player = None
 
             else:
                 # Parse video page instead
                 video_page = get_content('https://www.youtube.com/watch?v=%s' % self.vid)
                 ytplayer_config = json.loads(re.search('ytplayer.config\s*=\s*([^\n]+?});', video_page).group(1))
 
-                self.title = ytplayer_config['args']['title']
+                self.title = json.loads(ytplayer_config["args"]["player_response"])["videoDetails"]["title"]
                 self.html5player = 'https://www.youtube.com' + ytplayer_config['assets']['js']
                 stream_list = ytplayer_config['args']['url_encoded_fmt_stream_map'].split(',')
 
         elif video_info['status'] == ['fail']:
+            logging.debug('ERRORCODE: %s' % video_info['errorcode'][0])
             if video_info['errorcode'] == ['150']:
+                # FIXME: still relevant?
                 if cookies:
                     # Load necessary cookies into headers (for age-restricted videos)
                     consent, ssid, hsid, sid = 'YES', '', '', ''
@@ -297,7 +309,8 @@ class YouTube(VideoExtractor):
                 'url': metadata['url'][0],
                 'sig': metadata['sig'][0] if 'sig' in metadata else None,
                 's': metadata['s'][0] if 's' in metadata else None,
-                'quality': metadata['quality'][0],
+                'quality': metadata['quality'][0] if 'quality' in metadata else None,
+                #'quality': metadata['quality_label'][0] if 'quality_label' in metadata else None,
                 'type': metadata['type'][0],
                 'mime': metadata['type'][0].split(';')[0],
                 'container': mime_to_container(metadata['type'][0].split(';')[0]),
@@ -404,74 +417,82 @@ class YouTube(VideoExtractor):
             # VEVO
             if not self.html5player: return
             self.js = get_content(self.html5player)
-            if 'adaptive_fmts' in ytplayer_config['args']:
+
+            try:
+                # Video info from video page (not always available)
                 streams = [dict([(i.split('=')[0],
                                   parse.unquote(i.split('=')[1]))
                                  for i in afmt.split('&')])
                            for afmt in ytplayer_config['args']['adaptive_fmts'].split(',')]
-                for stream in streams: # get over speed limiting
-                    stream['url'] += '&ratebypass=yes'
-                for stream in streams: # audio
-                    if stream['type'].startswith('audio/mp4'):
-                        dash_mp4_a_url = stream['url']
+            except:
+                streams = [dict([(i.split('=')[0],
+                                  parse.unquote(i.split('=')[1]))
+                                 for i in afmt.split('&')])
+                           for afmt in video_info['adaptive_fmts'][0].split(',')]
+
+            for stream in streams: # get over speed limiting
+                stream['url'] += '&ratebypass=yes'
+            for stream in streams: # audio
+                if stream['type'].startswith('audio/mp4'):
+                    dash_mp4_a_url = stream['url']
+                    if 's' in stream:
+                        sig = self.__class__.decipher(self.js, stream['s'])
+                        dash_mp4_a_url += '&sig={}'.format(sig)
+                    dash_mp4_a_size = stream['clen']
+                elif stream['type'].startswith('audio/webm'):
+                    dash_webm_a_url = stream['url']
+                    if 's' in stream:
+                        sig = self.__class__.decipher(self.js, stream['s'])
+                        dash_webm_a_url += '&sig={}'.format(sig)
+                    dash_webm_a_size = stream['clen']
+            for stream in streams: # video
+                if 'size' in stream:
+                    if stream['type'].startswith('video/mp4'):
+                        mimeType = 'video/mp4'
+                        dash_url = stream['url']
                         if 's' in stream:
                             sig = self.__class__.decipher(self.js, stream['s'])
-                            dash_mp4_a_url += '&signature={}'.format(sig)
-                        dash_mp4_a_size = stream['clen']
-                    elif stream['type'].startswith('audio/webm'):
-                        dash_webm_a_url = stream['url']
+                            dash_url += '&sig={}'.format(sig)
+                        dash_size = stream['clen']
+                        itag = stream['itag']
+                        dash_urls = self.__class__.chunk_by_range(dash_url, int(dash_size))
+                        dash_mp4_a_urls = self.__class__.chunk_by_range(dash_mp4_a_url, int(dash_mp4_a_size))
+                        self.dash_streams[itag] = {
+                            'quality': '%s (%s)' % (stream['size'], stream['quality_label']),
+                            'itag': itag,
+                            'type': mimeType,
+                            'mime': mimeType,
+                            'container': 'mp4',
+                            'src': [dash_urls, dash_mp4_a_urls],
+                            'size': int(dash_size) + int(dash_mp4_a_size)
+                        }
+                    elif stream['type'].startswith('video/webm'):
+                        mimeType = 'video/webm'
+                        dash_url = stream['url']
                         if 's' in stream:
                             sig = self.__class__.decipher(self.js, stream['s'])
-                            dash_webm_a_url += '&signature={}'.format(sig)
-                        dash_webm_a_size = stream['clen']
-                for stream in streams: # video
-                    if 'size' in stream:
-                        if stream['type'].startswith('video/mp4'):
-                            mimeType = 'video/mp4'
-                            dash_url = stream['url']
-                            if 's' in stream:
-                                sig = self.__class__.decipher(self.js, stream['s'])
-                                dash_url += '&signature={}'.format(sig)
-                            dash_size = stream['clen']
-                            itag = stream['itag']
-                            dash_urls = self.__class__.chunk_by_range(dash_url, int(dash_size))
-                            dash_mp4_a_urls = self.__class__.chunk_by_range(dash_mp4_a_url, int(dash_mp4_a_size))
-                            self.dash_streams[itag] = {
-                                'quality': '%s (%s)' % (stream['size'], stream['quality_label']),
-                                'itag': itag,
-                                'type': mimeType,
-                                'mime': mimeType,
-                                'container': 'mp4',
-                                'src': [dash_urls, dash_mp4_a_urls],
-                                'size': int(dash_size) + int(dash_mp4_a_size)
-                            }
-                        elif stream['type'].startswith('video/webm'):
-                            mimeType = 'video/webm'
-                            dash_url = stream['url']
-                            if 's' in stream:
-                                sig = self.__class__.decipher(self.js, stream['s'])
-                                dash_url += '&signature={}'.format(sig)
-                            dash_size = stream['clen']
-                            itag = stream['itag']
-                            audio_url = None
-                            audio_size = None
-                            try:
-                                audio_url = dash_webm_a_url
-                                audio_size = int(dash_webm_a_size)
-                            except UnboundLocalError as e:
-                                audio_url = dash_mp4_a_url
-                                audio_size = int(dash_mp4_a_size)
-                            dash_urls = self.__class__.chunk_by_range(dash_url, int(dash_size))
-                            audio_urls = self.__class__.chunk_by_range(audio_url, int(audio_size))
-                            self.dash_streams[itag] = {
-                                'quality': '%s (%s)' % (stream['size'], stream['quality_label']),
-                                'itag': itag,
-                                'type': mimeType,
-                                'mime': mimeType,
-                                'container': 'webm',
-                                'src': [dash_urls, audio_urls],
-                                'size': int(dash_size) + int(audio_size)
-                            }
+                            dash_url += '&sig={}'.format(sig)
+                        dash_size = stream['clen']
+                        itag = stream['itag']
+                        audio_url = None
+                        audio_size = None
+                        try:
+                            audio_url = dash_webm_a_url
+                            audio_size = int(dash_webm_a_size)
+                        except UnboundLocalError as e:
+                            audio_url = dash_mp4_a_url
+                            audio_size = int(dash_mp4_a_size)
+                        dash_urls = self.__class__.chunk_by_range(dash_url, int(dash_size))
+                        audio_urls = self.__class__.chunk_by_range(audio_url, int(audio_size))
+                        self.dash_streams[itag] = {
+                            'quality': '%s (%s)' % (stream['size'], stream['quality_label']),
+                            'itag': itag,
+                            'type': mimeType,
+                            'mime': mimeType,
+                            'container': 'webm',
+                            'src': [dash_urls, audio_urls],
+                            'size': int(dash_size) + int(audio_size)
+                        }
 
     def extract(self, **kwargs):
         if not self.streams_sorted:
@@ -493,13 +514,13 @@ class YouTube(VideoExtractor):
             src = self.streams[stream_id]['url']
             if self.streams[stream_id]['sig'] is not None:
                 sig = self.streams[stream_id]['sig']
-                src += '&signature={}'.format(sig)
+                src += '&sig={}'.format(sig)
             elif self.streams[stream_id]['s'] is not None:
                 if not hasattr(self, 'js'):
                     self.js = get_content(self.html5player)
                 s = self.streams[stream_id]['s']
                 sig = self.__class__.decipher(self.js, s)
-                src += '&signature={}'.format(sig)
+                src += '&sig={}'.format(sig)
 
             self.streams[stream_id]['src'] = [src]
             self.streams[stream_id]['size'] = urls_size(self.streams[stream_id]['src'])

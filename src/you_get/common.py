@@ -10,6 +10,7 @@ import socket
 import locale
 import logging
 import argparse
+import ssl
 from http import cookiejar
 from importlib import import_module
 from urllib import request, parse, error
@@ -85,7 +86,6 @@ SITES = {
     'naver'            : 'naver',
     '7gogo'            : 'nanagogo',
     'nicovideo'        : 'nicovideo',
-    'panda'            : 'panda',
     'pinterest'        : 'pinterest',
     'pixnet'           : 'pixnet',
     'pptv'             : 'pptv',
@@ -130,18 +130,20 @@ SITES = {
 dry_run = False
 json_output = False
 force = False
+skip_existing_file_size_check = False
 player = None
 extractor_proxy = None
 cookies = None
 output_filename = None
 auto_rename = False
+insecure = False
 
 fake_headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',  # noqa
     'Accept-Charset': 'UTF-8,*;q=0.5',
     'Accept-Encoding': 'gzip,deflate,sdch',
     'Accept-Language': 'en-US,en;q=0.8',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:60.0) Gecko/20100101 Firefox/60.0',  # noqa
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:64.0) Gecko/20100101 Firefox/64.0',  # noqa
 }
 
 if sys.stdout.isatty():
@@ -391,7 +393,14 @@ def urlopen_with_retry(*args, **kwargs):
     retry_time = 3
     for i in range(retry_time):
         try:
-            return request.urlopen(*args, **kwargs)
+            if insecure:
+                # ignore ssl errors
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return request.urlopen(*args, context=ctx, **kwargs)
+            else:
+                return request.urlopen(*args, **kwargs)
         except socket.timeout as e:
             logging.debug('request attempt %s timeout' % str(i + 1))
             if i + 1 == retry_time:
@@ -624,15 +633,22 @@ def url_save(
     while continue_renameing:
         continue_renameing = False
         if os.path.exists(filepath):
-            if not force and file_size == os.path.getsize(filepath):
+            if not force and (file_size == os.path.getsize(filepath) or skip_existing_file_size_check):
                 if not is_part:
                     if bar:
                         bar.done()
-                    log.w(
-                        'Skipping {}: file already exists'.format(
-                            tr(os.path.basename(filepath))
+                    if skip_existing_file_size_check:
+                        log.w(
+                            'Skipping {} without checking size: file already exists'.format(
+                                tr(os.path.basename(filepath))
+                            )
                         )
-                    )
+                    else:
+                        log.w(
+                            'Skipping {}: file already exists'.format(
+                                tr(os.path.basename(filepath))
+                            )
+                        )
                 else:
                     if bar:
                         bar.update_received(file_size)
@@ -869,13 +885,16 @@ class DummyProgressBar:
         pass
 
 
-def get_output_filename(urls, title, ext, output_dir, merge):
+def get_output_filename(urls, title, ext, output_dir, merge, **kwargs):
     # lame hack for the --output-filename option
     global output_filename
     if output_filename:
+        result = output_filename
+        if kwargs.get('part', -1) >= 0:
+            result = '%s[%02d]' % (result, kwargs.get('part'))
         if ext:
-            return output_filename + '.' + ext
-        return output_filename
+            result = '%s.%s' % (result, ext)
+        return result
 
     merged_ext = ext
     if (len(urls) > 1) and merge:
@@ -892,7 +911,11 @@ def get_output_filename(urls, title, ext, output_dir, merge):
                 merged_ext = 'mkv'
             else:
                 merged_ext = 'ts'
-    return '%s.%s' % (title, merged_ext)
+    result = title
+    if kwargs.get('part', -1) >= 0:
+        result = '%s[%02d]' % (result, kwargs.get('part'))
+    result = '%s.%s' % (result, merged_ext)
+    return result
 
 def print_user_agent(faker=False):
     urllib_default_user_agent = 'Python-urllib/%d.%d' % sys.version_info[:2]
@@ -936,8 +959,12 @@ def download_urls(
 
     if total_size:
         if not force and os.path.exists(output_filepath) and not auto_rename\
-                and os.path.getsize(output_filepath) >= total_size * 0.9:
-            log.w('Skipping %s: file already exists' % output_filepath)
+                and (os.path.getsize(output_filepath) >= total_size * 0.9\
+                or skip_existing_file_size_check):
+            if skip_existing_file_size_check:
+                log.w('Skipping %s without checking size: file already exists' % output_filepath)
+            else:
+                log.w('Skipping %s: file already exists' % output_filepath)
             print()
             return
         bar = SimpleProgressBar(total_size, len(urls))
@@ -955,16 +982,16 @@ def download_urls(
         bar.done()
     else:
         parts = []
-        print('Downloading %s.%s ...' % (tr(title), ext))
+        print('Downloading %s ...' % tr(output_filename))
         bar.update()
         for i, url in enumerate(urls):
-            filename = '%s[%02d].%s' % (title, i, ext)
-            filepath = os.path.join(output_dir, filename)
-            parts.append(filepath)
+            output_filename_i = get_output_filename(urls, title, ext, output_dir, merge, part=i)
+            output_filepath_i = os.path.join(output_dir, output_filename_i)
+            parts.append(output_filepath_i)
             # print 'Downloading %s [%s/%s]...' % (tr(filename), i + 1, len(urls))
             bar.update_piece(i + 1)
             url_save(
-                url, filepath, bar, refer=refer, is_part=True, faker=faker,
+                url, output_filepath_i, bar, refer=refer, is_part=True, faker=faker,
                 headers=headers, **kwargs
             )
         bar.done()
@@ -1290,7 +1317,7 @@ def load_cookies(cookiefile):
         cookies = cookiejar.MozillaCookieJar()
         now = time.time()
         ignore_discard, ignore_expires = False, False
-        with open(cookiefile, 'r') as f:
+        with open(cookiefile, 'r', encoding='utf-8') as f:
             for line in f:
                 # last field may be absent, so keep any trailing tab
                 if line.endswith("\n"): line = line[:-1]
@@ -1451,6 +1478,10 @@ def script_main(download, download_playlist, **kwargs):
         help='Force overwriting existing files'
     )
     download_grp.add_argument(
+        '--skip-existing-file-size-check', action='store_true', default=False,
+        help='Skip existing file without checking file size'
+    )
+    download_grp.add_argument(
         '-F', '--format', metavar='STREAM_ID',
         help='Set video format to STREAM_ID'
     )
@@ -1493,6 +1524,11 @@ def script_main(download, download_playlist, **kwargs):
         help='Auto rename same name different files'
     )
 
+    download_grp.add_argument(
+        '-k', '--insecure', action='store_true', default=False,
+        help='ignore ssl errors'
+    )
+
     proxy_grp = parser.add_argument_group('Proxy options')
     proxy_grp = proxy_grp.add_mutually_exclusive_group()
     proxy_grp.add_argument(
@@ -1531,19 +1567,22 @@ def script_main(download, download_playlist, **kwargs):
         logging.getLogger().setLevel(logging.DEBUG)
 
     global force
+    global skip_existing_file_size_check
     global dry_run
     global json_output
     global player
     global extractor_proxy
     global output_filename
     global auto_rename
-
+    global insecure
     output_filename = args.output_filename
     extractor_proxy = args.extractor_proxy
 
     info_only = args.info
     if args.force:
         force = True
+    if args.skip_existing_file_size_check:
+        skip_existing_file_size_check = True
     if args.auto_rename:
         auto_rename = True
     if args.url:
@@ -1568,6 +1607,10 @@ def script_main(download, download_playlist, **kwargs):
     only_caption = False
     if args.only_caption:
         only_caption = True
+
+    if args.insecure:
+        # ignore ssl
+        insecure = True
 
     if args.no_proxy:
         set_http_proxy('')

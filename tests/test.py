@@ -7,6 +7,7 @@ from you_get.extractors import (
     magisto,
     youtube,
     bilibili,
+    toutiao,
 )
 
 
@@ -30,6 +31,7 @@ class YouGetTests(unittest.TestCase):
             'http://www.youtube.com/attribution_link?u=/watch?v%3DldAKIzq7bvs%26feature%3Dshare',  # noqa
             info_only=True
         )
+
 
 if __name__ == '__main__':
     unittest.main()
