@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SIZE="1366x768"
+SIZE="1920x1080"
 
 echo "Play $@..."
 
@@ -13,7 +13,7 @@ CAPTION=`ls $TMP_1`
 
 echo "Caption $CAPTION found..."
 
-danmaku2ass -s $SIZE -o $TMP_2/tmp.ass "$TMP_1/$CAPTION"
+danmaku2ass -s $SIZE -dm 15 -fs 30 -o $TMP_2/tmp.ass "$TMP_1/$CAPTION"
 
 rm -rf $TMP_1
 
