@@ -6,14 +6,14 @@ from you_get.extractors import (
     imgur,
     magisto,
     youtube,
-    missevan
+    missevan,
+    acfun
 )
 
 
 class YouGetTests(unittest.TestCase):
     def test_imgur(self):
         imgur.download('http://imgur.com/WVLk5nD', info_only=True)
-        imgur.download('http://imgur.com/gallery/WVLk5nD', info_only=True)
 
     def test_magisto(self):
         magisto.download(
@@ -38,6 +38,8 @@ class YouGetTests(unittest.TestCase):
             info_only=True
         )
 
+    def test_acfun(self):
+        acfun.download('https://www.acfun.cn/v/ac11701912', info_only=True)
 
 if __name__ == '__main__':
     unittest.main()
