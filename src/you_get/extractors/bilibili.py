@@ -159,7 +159,7 @@ class Bilibili(VideoExtractor):
             sort = 'live'
         elif re.match(r'https?://vc\.bilibili\.com/video/(\d+)', self.url):
             sort = 'vc'
-        elif re.match(r'https?://(www\.)?bilibili\.com/video/av(\d+)', self.url):
+        elif re.match(r'https?://(www\.)?bilibili\.com/video/(av(\d+)|(BV(\S+)))', self.url):
             sort = 'video'
         else:
             self.download_playlist_by_url(self.url, **kwargs)
@@ -552,7 +552,7 @@ class Bilibili(VideoExtractor):
         elif re.match(r'https?://(www\.)?bilibili\.com/bangumi/media/md(\d+)', self.url) or \
             re.match(r'https?://bangumi\.bilibili\.com/anime/(\d+)', self.url):
             sort = 'bangumi_md'
-        elif re.match(r'https?://(www\.)?bilibili\.com/video/av(\d+)', self.url):
+        elif re.match(r'https?://(www\.)?bilibili\.com/video/(av(\d+)|BV(\S+))', self.url):
             sort = 'video'
         elif re.match(r'https?://space\.?bilibili\.com/(\d+)/channel/detail\?.*cid=(\d+)', self.url):
             sort = 'space_channel'
