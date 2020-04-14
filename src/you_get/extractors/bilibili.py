@@ -28,6 +28,8 @@ class Bilibili(VideoExtractor):
          'container': 'FLV', 'video_resolution': '360p', 'desc': '流畅 360P'},
         # 'quality': 15?
         {'id': 'mp4', 'quality': 0},
+
+        {'id': 'jpg', 'quality': 0},
     ]
 
     @staticmethod
@@ -103,8 +105,8 @@ class Bilibili(VideoExtractor):
         return 'https://api.bilibili.com/x/space/channel/video?mid=%s&cid=%s&pn=%s&ps=%s&order=0&jsonp=jsonp' % (mid, cid, pn, ps)
 
     @staticmethod
-    def bilibili_space_favlist_api(vmid, fid, pn=1, ps=100):
-        return 'https://api.bilibili.com/x/space/fav/arc?vmid=%s&fid=%s&pn=%s&ps=%s&order=0&jsonp=jsonp' % (vmid, fid, pn, ps)
+    def bilibili_space_favlist_api(fid, pn=1, ps=20):
+        return 'https://api.bilibili.com/x/v3/fav/resource/list?media_id=%s&pn=%s&ps=%s&order=mtime&type=0&tid=0&jsonp=jsonp' % (fid, pn, ps)
 
     @staticmethod
     def bilibili_space_video_api(mid, pn=1, ps=100):
@@ -113,6 +115,10 @@ class Bilibili(VideoExtractor):
     @staticmethod
     def bilibili_vc_api(video_id):
         return 'https://api.vc.bilibili.com/clip/v1/video/detail?video_id=%s' % video_id
+
+    @staticmethod
+    def bilibili_h_api(doc_id):
+        return 'https://api.vc.bilibili.com/link_draw/v1/doc/detail?doc_id=%s' % doc_id
 
     @staticmethod
     def url_size(url, faker=False, headers={},err_value=0):
@@ -132,10 +138,10 @@ class Bilibili(VideoExtractor):
         #                    r'<h1 title="([^"]+)"')
 
         # redirect: watchlater
-        if re.match(r'https?://(www\.)?bilibili\.com/watchlater/#/av(\d+)', self.url):
-            avid = match1(self.url, r'/av(\d+)')
+        if re.match(r'https?://(www\.)?bilibili\.com/watchlater/#/(av(\d+)|BV(\S+)/?)', self.url):
+            avid = match1(self.url, r'/(av\d+)') or match1(self.url, r'/(BV\w+)')
             p = int(match1(self.url, r'/p(\d+)') or '1')
-            self.url = 'https://www.bilibili.com/video/av%s?p=%s' % (avid, p)
+            self.url = 'https://www.bilibili.com/video/%s?p=%s' % (avid, p)
             html_content = get_content(self.url, headers=self.bilibili_headers())
 
         # redirect: bangumi/play/ss -> bangumi/play/ep
@@ -161,6 +167,8 @@ class Bilibili(VideoExtractor):
             sort = 'vc'
         elif re.match(r'https?://(www\.)?bilibili\.com/video/(av(\d+)|(BV(\S+)))', self.url):
             sort = 'video'
+        elif re.match(r'https?://h\.?bilibili\.com/(\d+)', self.url):
+            sort = 'h'
         else:
             self.download_playlist_by_url(self.url, **kwargs)
             return
@@ -426,6 +434,24 @@ class Bilibili(VideoExtractor):
             self.streams['mp4'] = {'container': container,
                                    'size': size, 'src': [playurl]}
 
+        # h images
+        elif sort == 'h':
+            m = re.match(r'https?://h\.?bilibili\.com/(\d+)', self.url)
+            doc_id = m.group(1)
+            api_url = self.bilibili_h_api(doc_id)
+            api_content = get_content(api_url, headers=self.bilibili_headers())
+            h_info = json.loads(api_content)
+
+            urls = []
+            for pic in h_info['data']['item']['pictures']:
+                img_src = pic['img_src']
+                urls.append(img_src)
+            size = urls_size(urls)
+
+            self.title = doc_id
+            container = 'jpg'  # enforce JPG container
+            self.streams[container] = {'container': container,
+                                       'size': size, 'src': urls}
 
     def prepare_by_cid(self,avid,cid,title,html_content,playinfo,playinfo_,url):
         #response for interaction video
@@ -679,20 +705,22 @@ class Bilibili(VideoExtractor):
         elif sort == 'space_favlist':
             m = re.match(r'https?://space\.?bilibili\.com/(\d+)/favlist\?.*fid=(\d+)', self.url)
             vmid, fid = m.group(1), m.group(2)
-            api_url = self.bilibili_space_favlist_api(vmid, fid)
+            api_url = self.bilibili_space_favlist_api(fid)
             api_content = get_content(api_url, headers=self.bilibili_headers(referer=self.url))
             favlist_info = json.loads(api_content)
-            pc = favlist_info['data']['pagecount']
-
+            pc = favlist_info['data']['info']['media_count'] // len(favlist_info['data']['medias'])
+            if favlist_info['data']['info']['media_count'] % len(favlist_info['data']['medias']) != 0:
+                pc += 1
             for pn in range(1, pc + 1):
-                api_url = self.bilibili_space_favlist_api(vmid, fid, pn=pn)
+                log.w('Extracting %s of %s pages ...' % (pn, pc))
+                api_url = self.bilibili_space_favlist_api(fid, pn=pn)
                 api_content = get_content(api_url, headers=self.bilibili_headers(referer=self.url))
                 favlist_info = json.loads(api_content)
 
-                epn, i = len(favlist_info['data']['archives']), 0
-                for video in favlist_info['data']['archives']:
+                epn, i = len(favlist_info['data']['medias']), 0
+                for video in favlist_info['data']['medias']:
                     i += 1; log.w('Extracting %s of %s videos ...' % (i, epn))
-                    url = 'https://www.bilibili.com/video/av%s' % video['aid']
+                    url = 'https://www.bilibili.com/video/av%s' % video['id']
                     self.__class__().download_playlist_by_url(url, **kwargs)
 
         elif sort == 'space_video':
