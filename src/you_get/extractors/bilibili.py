@@ -62,7 +62,7 @@ class Bilibili(VideoExtractor):
 
     @staticmethod
     def bilibili_api(avid, cid, qn=0):
-        return 'https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=%s&type=&otype=json&fnver=0&fnval=16' % (avid, cid, qn)
+        return 'https://api.bilibili.com/x/player/playurl?avid=%s&cid=%s&qn=%s&type=&otype=json&fnver=0&fnval=16&fourk=1' % (avid, cid, qn)
 
     @staticmethod
     def bilibili_audio_api(sid):
@@ -81,8 +81,8 @@ class Bilibili(VideoExtractor):
         return 'https://www.bilibili.com/audio/music-service-c/web/song/of-menu?sid=%s&pn=1&ps=%s' % (sid, ps)
 
     @staticmethod
-    def bilibili_bangumi_api(avid, cid, ep_id, qn=0):
-        return 'https://api.bilibili.com/pgc/player/web/playurl?avid=%s&cid=%s&qn=%s&type=&otype=json&ep_id=%s&fnver=0&fnval=16' % (avid, cid, qn, ep_id)
+    def bilibili_bangumi_api(avid, cid, ep_id, qn=0, fnval=16):
+        return 'https://api.bilibili.com/pgc/player/web/playurl?avid=%s&cid=%s&qn=%s&type=&otype=json&ep_id=%s&fnver=0&fnval=%s' % (avid, cid, qn, ep_id, fnval)
 
     @staticmethod
     def bilibili_interface_api(cid, qn=0):
@@ -114,7 +114,7 @@ class Bilibili(VideoExtractor):
 
     @staticmethod
     def bilibili_space_video_api(mid, pn=1, ps=100):
-        return 'https://space.bilibili.com/ajax/member/getSubmitVideos?mid=%s&page=%s&pagesize=%s&order=0&jsonp=jsonp' % (mid, pn, ps)
+        return "https://api.bilibili.com/x/space/arc/search?mid=%s&pn=%s&ps=%s&tid=0&keyword=&order=pubdate&jsonp=jsonp" % (mid, pn, ps)
 
     @staticmethod
     def bilibili_vc_api(video_id):
@@ -316,15 +316,16 @@ class Bilibili(VideoExtractor):
                 return
             current_quality = api_playinfo['result']['quality']
             # get alternative formats from API
-            for qn in [120, 112, 80, 64, 32, 16]:
-                # automatic format for durl: qn=0
-                # for dash, qn does not matter
-                if qn != current_quality:
-                    api_url = self.bilibili_bangumi_api(avid, cid, ep_id, qn=qn)
-                    api_content = get_content(api_url, headers=self.bilibili_headers(referer=self.url))
-                    api_playinfo = json.loads(api_content)
-                    if api_playinfo['code'] == 0:  # success
-                        playinfos.append(api_playinfo)
+            for fnval in [8, 16]:
+                for qn in [120, 112, 80, 64, 32, 16]:
+                    # automatic format for durl: qn=0
+                    # for dash, qn does not matter
+                    if qn != current_quality:
+                        api_url = self.bilibili_bangumi_api(avid, cid, ep_id, qn=qn, fnval=fnval)
+                        api_content = get_content(api_url, headers=self.bilibili_headers(referer=self.url))
+                        api_playinfo = json.loads(api_content)
+                        if api_playinfo['code'] == 0:  # success
+                            playinfos.append(api_playinfo)
 
             for playinfo in playinfos:
                 if 'durl' in playinfo['result']:
@@ -733,15 +734,15 @@ class Bilibili(VideoExtractor):
             api_url = self.bilibili_space_video_api(mid)
             api_content = get_content(api_url, headers=self.bilibili_headers())
             videos_info = json.loads(api_content)
-            pc = videos_info['data']['pages']
+            pc = videos_info['data']['page']['count'] // videos_info['data']['page']['ps']
 
             for pn in range(1, pc + 1):
                 api_url = self.bilibili_space_video_api(mid, pn=pn)
                 api_content = get_content(api_url, headers=self.bilibili_headers())
                 videos_info = json.loads(api_content)
 
-                epn, i = len(videos_info['data']['vlist']), 0
-                for video in videos_info['data']['vlist']:
+                epn, i = len(videos_info['data']['list']['vlist']), 0
+                for video in videos_info['data']['list']['vlist']:
                     i += 1; log.w('Extracting %s of %s videos ...' % (i, epn))
                     url = 'https://www.bilibili.com/video/av%s' % video['aid']
                     self.__class__().download_playlist_by_url(url, **kwargs)

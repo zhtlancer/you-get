@@ -68,7 +68,7 @@ class YouTube(VideoExtractor):
          'audio_encoding': 'AAC', 'audio_bitrate': '24'},
     ]
 
-    def decipher(js, s):
+    def s_to_sig(js, s):
         # Examples:
         # - https://www.youtube.com/yts/jsbin/player-da_DK-vflWlK-zq/base.js
         # - https://www.youtube.com/yts/jsbin/player-vflvABTsY/da_DK/base.js
@@ -157,34 +157,22 @@ class YouTube(VideoExtractor):
             log.wtf('[Failed] Unsupported URL pattern.')
 
         video_page = get_content('https://www.youtube.com/playlist?list=%s' % playlist_id)
-        from html.parser import HTMLParser
-        videos = sorted([HTMLParser().unescape(video)
-                         for video in re.findall(r'<a href="(/watch\?[^"]+)"', video_page)
-                         if parse_query_param(video, 'index')],
-                        key=lambda video: parse_query_param(video, 'index'))
+        ytInitialData = json.loads(match1(video_page, r'window\["ytInitialData"\]\s*=\s*(.+);'))
 
-        # Parse browse_ajax page for more videos to load
-        load_more_href = match1(video_page, r'data-uix-load-more-href="([^"]+)"')
-        while load_more_href:
-            browse_ajax = get_content('https://www.youtube.com/%s' % load_more_href)
-            browse_data = json.loads(browse_ajax)
-            load_more_widget_html = browse_data['load_more_widget_html']
-            content_html = browse_data['content_html']
-            vs = set(re.findall(r'href="(/watch\?[^"]+)"', content_html))
-            videos += sorted([HTMLParser().unescape(video)
-                              for video in list(vs)
-                              if parse_query_param(video, 'index')])
-            load_more_href = match1(load_more_widget_html, r'data-uix-load-more-href="([^"]+)"')
+        tab0 = ytInitialData['contents']['twoColumnBrowseResultsRenderer']['tabs'][0]
+        itemSection0 = tab0['tabRenderer']['content']['sectionListRenderer']['contents'][0]
+        playlistVideoList0 = itemSection0['itemSectionRenderer']['contents'][0]
+        videos = playlistVideoList0['playlistVideoListRenderer']['contents']
 
         self.title = re.search(r'<meta name="title" content="([^"]+)"', video_page).group(1)
         self.p_playlist()
-        for video in videos:
-            vid = parse_query_param(video, 'v')
-            index = parse_query_param(video, 'index')
+        for index, video in enumerate(videos, 1):
+            vid = video['playlistVideoRenderer']['videoId']
             try:
                 self.__class__().download_by_url(self.__class__.get_url_from_vid(vid), index=index, **kwargs)
             except:
                 pass
+        # FIXME: show DASH stream sizes (by default) for playlist videos
 
     def prepare(self, **kwargs):
         assert self.url or self.vid
@@ -216,13 +204,22 @@ class YouTube(VideoExtractor):
                 video_page = get_content('https://www.youtube.com/watch?v=%s' % self.vid)
                 try:
                     ytplayer_config = json.loads(re.search('ytplayer.config\s*=\s*([^\n]+?});', video_page).group(1))
-                    self.html5player = 'https://www.youtube.com' + ytplayer_config['assets']['js']
+
                     # Workaround: get_video_info returns bad s. Why?
                     if 'url_encoded_fmt_stream_map' not in ytplayer_config['args']:
                         stream_list = json.loads(ytplayer_config['args']['player_response'])['streamingData']['formats']
                     else:
                         stream_list = ytplayer_config['args']['url_encoded_fmt_stream_map'].split(',')
                     #stream_list = ytplayer_config['args']['adaptive_fmts'].split(',')
+
+                    if 'assets' in ytplayer_config:
+                        self.html5player = 'https://www.youtube.com' + ytplayer_config['assets']['js']
+                    elif re.search('([^"]*/base\.js)"', video_page):
+                        self.html5player = 'https://www.youtube.com' + re.search('([^"]*/base\.js)"', video_page).group(1)
+                        self.html5player = self.html5player.replace('\/', '/') # unescape URL
+                    else:
+                        self.html5player = None
+
                 except:
                     if 'url_encoded_fmt_stream_map' not in video_info:
                         stream_list = json.loads(video_info['player_response'][0])['streamingData']['formats']
@@ -493,13 +490,13 @@ class YouTube(VideoExtractor):
                 if stream['type'].startswith('audio/mp4'):
                     dash_mp4_a_url = stream['url']
                     if 's' in stream:
-                        sig = self.__class__.decipher(self.js, stream['s'])
+                        sig = self.__class__.s_to_sig(self.js, stream['s'])
                         dash_mp4_a_url += '&sig={}'.format(sig)
                     dash_mp4_a_size = stream['clen']
                 elif stream['type'].startswith('audio/webm'):
                     dash_webm_a_url = stream['url']
                     if 's' in stream:
-                        sig = self.__class__.decipher(self.js, stream['s'])
+                        sig = self.__class__.s_to_sig(self.js, stream['s'])
                         dash_webm_a_url += '&sig={}'.format(sig)
                     dash_webm_a_size = stream['clen']
             for stream in streams: # video
@@ -508,7 +505,7 @@ class YouTube(VideoExtractor):
                         mimeType = 'video/mp4'
                         dash_url = stream['url']
                         if 's' in stream:
-                            sig = self.__class__.decipher(self.js, stream['s'])
+                            sig = self.__class__.s_to_sig(self.js, stream['s'])
                             dash_url += '&sig={}'.format(sig)
                         dash_size = stream['clen']
                         itag = stream['itag']
@@ -527,7 +524,7 @@ class YouTube(VideoExtractor):
                         mimeType = 'video/webm'
                         dash_url = stream['url']
                         if 's' in stream:
-                            sig = self.__class__.decipher(self.js, stream['s'])
+                            sig = self.__class__.s_to_sig(self.js, stream['s'])
                             dash_url += '&sig={}'.format(sig)
                         dash_size = stream['clen']
                         itag = stream['itag']
@@ -576,7 +573,7 @@ class YouTube(VideoExtractor):
                 if not hasattr(self, 'js'):
                     self.js = get_content(self.html5player)
                 s = self.streams[stream_id]['s']
-                sig = self.__class__.decipher(self.js, s)
+                sig = self.__class__.s_to_sig(self.js, s)
                 src += '&sig={}'.format(sig)
 
             self.streams[stream_id]['src'] = [src]
